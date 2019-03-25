@@ -36,7 +36,8 @@ import scala.concurrent.duration._
 @ComponentScan(basePackageClasses = Array(
   classOf[SwaggerConfig],
   classOf[JacksonConfig],
-  classOf[controller._package]
+  classOf[controller._package],
+  classOf[converter._package]
 ))
 class RESTConfig extends WebMvcConfigurer {
 
