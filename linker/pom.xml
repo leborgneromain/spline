@@ -50,11 +50,6 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>za.co.absa.spline</groupId>
-            <artifactId>spline-persistence-mongo</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-core_${scala.compat.version}</artifactId>
             <scope>provided</scope>
