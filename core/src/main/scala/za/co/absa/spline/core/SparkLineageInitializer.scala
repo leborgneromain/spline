@@ -17,7 +17,11 @@
 package za.co.absa.spline.core
 
 import org.apache.commons.configuration._
+import org.apache.hadoop.{conf => hadoop}
+import org.apache.spark.SparkConf
+import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.util.QueryExecutionListener
 import org.slf4s.Logging
 import za.co.absa.spline.core.conf.SplineConfigurer.SplineMode._
 import za.co.absa.spline.core.conf._
@@ -41,6 +45,32 @@ object SparkLineageInitializer extends Logging {
     SparkSessionWrapper(sparkSession).enableLineageTracking(configurer)
   }
 
+  def constructBatchListener(sparkConf: SparkConf): QueryExecutionListener = {
+    // FIXME also needs to be wrapped to e.g. fail on incorectlly configured Spline or wrong Spark version based on mode
+    new DefaultSplineConfigurer(defaultSplineConfiguration(sparkConf), getHadoopConf(sparkConf))
+      .queryExecutionListener
+  }
+
+  private[core] def defaultSplineConfiguration(sparkConf: SparkConf) = {
+    val splinePropertiesFileName = "spline.properties"
+
+    val systemConfOpt = Some(new SystemConfiguration)
+    val propFileConfOpt = Try(new PropertiesConfiguration(splinePropertiesFileName)).toOption
+    val hadoopConfOpt = Some(new HadoopConfiguration(SparkHadoopUtil.get.newConfiguration(sparkConf)))
+    val sparkConfOpt = Some(new SparkConfiguration(sparkConf))
+
+    new CompositeConfiguration(Seq(
+      hadoopConfOpt,
+      sparkConfOpt,
+      systemConfOpt,
+      propFileConfOpt
+    ).flatten.asJava)
+  }
+
+  private def getHadoopConf(sparkConf: SparkConf): hadoop.Configuration = {
+    SparkHadoopUtil.get.newConfiguration(sparkConf)
+  }
+
   /**
     * The class is a wrapper around Spark session and performs all necessary registrations and procedures for initialization of the library.
     *
@@ -49,7 +79,9 @@ object SparkLineageInitializer extends Logging {
   implicit class SparkSessionWrapper(sparkSession: SparkSession) {
 
     private implicit val executionContext: ExecutionContext = ExecutionContext.global
-    private def defaultSplineConfigurer = new DefaultSplineConfigurer(defaultSplineConfiguration, sparkSession)
+    private def defaultSplineConfigurer = new DefaultSplineConfigurer(
+        defaultSplineConfiguration(),
+        sparkSession.sparkContext.hadoopConfiguration)
 
     /**
       * The method performs all necessary registrations and procedures for initialization of the library.
@@ -72,6 +104,8 @@ object SparkLineageInitializer extends Logging {
       sparkSession
     }
 
+    def defaultSplineConfiguration(): CompositeConfiguration = SparkLineageInitializer.defaultSplineConfiguration(sparkSession.sparkContext.getConf)
+
     /**
       * The method tries to initialize the library with external settings.
       *
@@ -85,21 +119,6 @@ object SparkLineageInitializer extends Logging {
 //       sparkSession.streams addListener configurer.streamingQueryListener
     }
 
-    private[core] val defaultSplineConfiguration = {
-      val splinePropertiesFileName = "spline.properties"
-
-      val systemConfOpt = Some(new SystemConfiguration)
-      val propFileConfOpt = Try(new PropertiesConfiguration(splinePropertiesFileName)).toOption
-      val hadoopConfOpt = Some(new HadoopConfiguration(sparkSession.sparkContext.hadoopConfiguration))
-      val sparkConfOpt = Some(new SparkConfiguration(sparkSession.sparkContext.getConf))
-
-      new CompositeConfiguration(Seq(
-        hadoopConfOpt,
-        sparkConfOpt,
-        systemConfOpt,
-        propFileConfOpt
-      ).flatten.asJava)
-    }
 
     private def preventDoubleInitialization(): Unit = {
       val sessionConf = sparkSession.conf

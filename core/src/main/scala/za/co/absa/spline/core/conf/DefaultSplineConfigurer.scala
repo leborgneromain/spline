@@ -17,17 +17,16 @@
 package za.co.absa.spline.core.conf
 
 import org.apache.commons.configuration.Configuration
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.streaming.StreamingQueryListener
+import org.apache.hadoop.{conf => hadoop}
 import org.apache.spark.sql.util.QueryExecutionListener
 import org.slf4s.Logging
 import za.co.absa.spline.common.transformations.AsyncTransformationPipeline
+import za.co.absa.spline.core.SparkLineageProcessor
 import za.co.absa.spline.core.conf.SplineConfigurer.SplineMode
 import za.co.absa.spline.core.conf.SplineConfigurer.SplineMode._
-import za.co.absa.spline.core.transformations.{DataLineageLinker, LineageProjectionMerger}
-import za.co.absa.spline.core.SparkLineageProcessor
 import za.co.absa.spline.core.harvester.DataLineageBuilderFactory
 import za.co.absa.spline.core.listener.SplineQueryExecutionListener
+import za.co.absa.spline.core.transformations.{DataLineageLinker, LineageProjectionMerger}
 import za.co.absa.spline.persistence.api.{DataLineageReader, NopDataLineageReader, PersistenceFactory}
 
 import scala.concurrent.ExecutionContext
@@ -57,7 +56,8 @@ object DefaultSplineConfigurer {
   *
   * @param configuration A source of settings
   */
-class DefaultSplineConfigurer(configuration: Configuration, sparkSession: SparkSession) extends SplineConfigurer with Logging {
+class DefaultSplineConfigurer(configuration: Configuration, hadoopConfiguration: hadoop.Configuration)
+    extends SplineConfigurer with Logging {
 
   import DefaultSplineConfigurer.ConfProperty._
   import za.co.absa.spline.common.ConfigurationImplicits._
@@ -76,7 +76,7 @@ class DefaultSplineConfigurer(configuration: Configuration, sparkSession: SparkS
   lazy val queryExecutionListener: QueryExecutionListener =
     new SplineQueryExecutionListener(lineageHarvester, lineageProcessor)
 
-  private lazy val lineageHarvester = new DataLineageBuilderFactory(sparkSession.sparkContext.hadoopConfiguration)
+  private lazy val lineageHarvester = new DataLineageBuilderFactory(hadoopConfiguration)
 
   private lazy val lineageProcessor = {
     val lineageReader = persistenceFactory.createDataLineageReader getOrElse NopDataLineageReader
