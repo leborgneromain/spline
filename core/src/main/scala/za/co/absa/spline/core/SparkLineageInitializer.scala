@@ -45,10 +45,59 @@ object SparkLineageInitializer extends Logging {
     SparkSessionWrapper(sparkSession).enableLineageTracking(configurer)
   }
 
-  def constructBatchListener(sparkConf: SparkConf): QueryExecutionListener = {
-    // FIXME also needs to be wrapped to e.g. fail on incorectlly configured Spline or wrong Spark version based on mode
-    new DefaultSplineConfigurer(defaultSplineConfiguration(sparkConf), getHadoopConf(sparkConf))
-      .queryExecutionListener
+  def constructBatchListener(sparkConf: SparkConf, initialized: ThreadLocal[Boolean]): QueryExecutionListener = {
+    val configurer = new DefaultSplineConfigurer(defaultSplineConfiguration(sparkConf), getHadoopConf(sparkConf))
+    if (configurer.splineMode != DISABLED) {
+        modeAwareListenerInit(configurer, threadLocalGetOrSetIsInitiliazed(initialized))
+          .getOrElse(throw registrationPreventingException())
+    } else {
+      throw registrationPreventingException()
+    }
+  }
+
+  private def registrationPreventingException() = new UnsupportedOperationException(
+          "This exception signals to Spark that Spline listener shouldn't be registered.")
+
+  private def modeAwareListenerInit(configurer: SplineConfigurer, getOrSetIsInitialized: () => Boolean): Option[QueryExecutionListener] = {
+    if (configurer.splineMode != DISABLED) {
+      if (getOrSetIsInitialized()) {
+        log info s"Spline v${SplineBuildInfo.version} is initializing..."
+        try {
+          val listener = attemptInitialization(configurer)
+          log info s"Spline successfully initialized. Spark Lineage tracking is ENABLED."
+          Some(listener)
+        } catch {
+          case NonFatal(e) if configurer.splineMode == BEST_EFFORT =>
+            log.error(s"Spline initialization failed! Spark Lineage tracking is DISABLED.", e)
+            None
+        }
+      } else {
+        log.warn("Spline lineage tracking is already initialized!")
+        None
+      }
+    } else {
+      None
+    }
+  }
+
+  private def threadLocalGetOrSetIsInitiliazed(initialized: ThreadLocal[Boolean])(): Boolean = {
+    if (!initialized.get()) {
+      initialized.set(true)
+      false
+    } else {
+      true
+    }
+  }
+
+  /**
+    * The method tries to initialize the library with external settings.
+    *
+    * @param configurer External settings
+    */
+  private def attemptInitialization(configurer: SplineConfigurer): QueryExecutionListener = {
+    SparkVersionRequirement.instance.requireSupportedVersion()
+    // TODO configurer.streamingQueryListener
+    configurer.queryExecutionListener
   }
 
   private[core] def defaultSplineConfiguration(sparkConf: SparkConf) = {
@@ -90,41 +139,27 @@ object SparkLineageInitializer extends Logging {
       * @return An original Spark session
       */
     def enableLineageTracking(configurer: SplineConfigurer = defaultSplineConfigurer): SparkSession = {
-      if (configurer.splineMode != DISABLED) sparkSession.synchronized {
-        preventDoubleInitialization()
-        log info s"Spline v${SplineBuildInfo.version} is initializing..."
-        try {
-          attemptInitialization(configurer)
-          log info s"Successfully initialized. Spark Lineage tracking is ENABLED."
-        } catch {
-          case NonFatal(e) if configurer.splineMode == BEST_EFFORT =>
-            log.error(s"Initialization failed! Spark Lineage tracking is DISABLED.", e)
-        }
+      sparkSession.synchronized {
+        // FIXME check if was not inited via codeless as well!!!
+        SparkLineageInitializer.modeAwareListenerInit(configurer, getOrSetIsInitialized)
+          .foreach(sparkSession.listenerManager.register(_))
+//         TODO: SL-128
+//        sparkSession.streams addListener configurer.streamingQueryListener
       }
       sparkSession
     }
 
-    def defaultSplineConfiguration(): CompositeConfiguration = SparkLineageInitializer.defaultSplineConfiguration(sparkSession.sparkContext.getConf)
+    def defaultSplineConfiguration(): CompositeConfiguration =
+      SparkLineageInitializer.defaultSplineConfiguration(sparkSession.sparkContext.getConf)
 
-    /**
-      * The method tries to initialize the library with external settings.
-      *
-      * @param configurer External settings
-      */
-    def attemptInitialization(configurer: SplineConfigurer): Unit = {
-      SparkVersionRequirement.instance.requireSupportedVersion()
-      sparkSession.listenerManager register configurer.queryExecutionListener
-
-      // TODO: SL-128
-//       sparkSession.streams addListener configurer.streamingQueryListener
-    }
-
-
-    private def preventDoubleInitialization(): Unit = {
+    private def getOrSetIsInitialized(): Boolean = {
       val sessionConf = sparkSession.conf
       sessionConf getOption initFlagKey match {
-        case Some(_) => throw new IllegalStateException("Lineage tracking is already initialized")
-        case None => sessionConf.set(initFlagKey, true.toString)
+        case Some(_) =>
+          true
+        case None =>
+          sessionConf.set(initFlagKey, true.toString)
+          false
       }
     }
   }
