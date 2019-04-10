@@ -143,7 +143,6 @@ object SparkLineageInitializer extends Logging {
         .getOption(org.apache.spark.sql.internal.StaticSQLConf.QUERY_EXECUTION_LISTENERS.key).isDefined
       if (!splineConfiguredForCodelessInit) {
         sparkSession.synchronized {
-          // FIXME check if was not inited via codeless as well!!!
           SparkLineageInitializer.modeAwareListenerInit(configurer, getOrSetIsInitialized)
             .foreach(sparkSession.listenerManager.register(_))
           //         TODO: SL-128
