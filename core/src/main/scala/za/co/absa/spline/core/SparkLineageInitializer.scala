@@ -60,7 +60,7 @@ object SparkLineageInitializer extends Logging {
 
   private def modeAwareListenerInit(configurer: SplineConfigurer, getOrSetIsInitialized: () => Boolean): Option[QueryExecutionListener] = {
     if (configurer.splineMode != DISABLED) {
-      if (getOrSetIsInitialized()) {
+      if (!getOrSetIsInitialized()) {
         log info s"Spline v${SplineBuildInfo.version} is initializing..."
         try {
           val listener = attemptInitialization(configurer)
@@ -139,12 +139,20 @@ object SparkLineageInitializer extends Logging {
       * @return An original Spark session
       */
     def enableLineageTracking(configurer: SplineConfigurer = defaultSplineConfigurer): SparkSession = {
-      sparkSession.synchronized {
-        // FIXME check if was not inited via codeless as well!!!
-        SparkLineageInitializer.modeAwareListenerInit(configurer, getOrSetIsInitialized)
-          .foreach(sparkSession.listenerManager.register(_))
-//         TODO: SL-128
-//        sparkSession.streams addListener configurer.streamingQueryListener
+      val splineConfiguredForCodelessInit = sparkSession.sparkContext.getConf
+        .getOption(org.apache.spark.sql.internal.StaticSQLConf.QUERY_EXECUTION_LISTENERS.key).isDefined
+      if (!splineConfiguredForCodelessInit) {
+        sparkSession.synchronized {
+          // FIXME check if was not inited via codeless as well!!!
+          SparkLineageInitializer.modeAwareListenerInit(configurer, getOrSetIsInitialized)
+            .foreach(sparkSession.listenerManager.register(_))
+          //         TODO: SL-128
+          //        sparkSession.streams addListener configurer.streamingQueryListener
+        }
+      } else {
+        log.warn("""
+          Spline lineage tracking is also configured for codeless initialization.
+          It won't be initialized by this code call to enableLineageTracking now."""")
       }
       sparkSession
     }
