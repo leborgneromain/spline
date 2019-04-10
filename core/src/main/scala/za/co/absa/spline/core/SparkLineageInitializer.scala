@@ -45,60 +45,13 @@ object SparkLineageInitializer extends Logging {
     SparkSessionWrapper(sparkSession).enableLineageTracking(configurer)
   }
 
-  def constructBatchListener(sparkConf: SparkConf, initialized: ThreadLocal[Boolean]): QueryExecutionListener = {
-    val configurer = new DefaultSplineConfigurer(defaultSplineConfiguration(sparkConf), getHadoopConf(sparkConf))
-    if (configurer.splineMode != DISABLED) {
-        modeAwareListenerInit(configurer, threadLocalGetOrSetIsInitiliazed(initialized))
-          .getOrElse(throw registrationPreventingException())
-    } else {
-      throw registrationPreventingException()
-    }
+  def createQueryExecutionListener(sparkSession: SparkSession): QueryExecutionListener = {
+    SparkSessionWrapper(sparkSession).createBatchListener()
   }
+
 
   private def registrationPreventingException() = new UnsupportedOperationException(
           "This exception signals to Spark that Spline listener shouldn't be registered.")
-
-  private def modeAwareListenerInit(configurer: SplineConfigurer, getOrSetIsInitialized: () => Boolean): Option[QueryExecutionListener] = {
-    if (configurer.splineMode != DISABLED) {
-      if (!getOrSetIsInitialized()) {
-        log info s"Spline v${SplineBuildInfo.version} is initializing..."
-        try {
-          val listener = attemptInitialization(configurer)
-          log info s"Spline successfully initialized. Spark Lineage tracking is ENABLED."
-          Some(listener)
-        } catch {
-          case NonFatal(e) if configurer.splineMode == BEST_EFFORT =>
-            log.error(s"Spline initialization failed! Spark Lineage tracking is DISABLED.", e)
-            None
-        }
-      } else {
-        log.warn("Spline lineage tracking is already initialized!")
-        None
-      }
-    } else {
-      None
-    }
-  }
-
-  private def threadLocalGetOrSetIsInitiliazed(initialized: ThreadLocal[Boolean])(): Boolean = {
-    if (!initialized.get()) {
-      initialized.set(true)
-      false
-    } else {
-      true
-    }
-  }
-
-  /**
-    * The method tries to initialize the library with external settings.
-    *
-    * @param configurer External settings
-    */
-  private def attemptInitialization(configurer: SplineConfigurer): QueryExecutionListener = {
-    SparkVersionRequirement.instance.requireSupportedVersion()
-    // TODO configurer.streamingQueryListener
-    configurer.queryExecutionListener
-  }
 
   private[core] def defaultSplineConfiguration(sparkConf: SparkConf) = {
     val splinePropertiesFileName = "spline.properties"
@@ -116,10 +69,6 @@ object SparkLineageInitializer extends Logging {
     ).flatten.asJava)
   }
 
-  private def getHadoopConf(sparkConf: SparkConf): hadoop.Configuration = {
-    SparkHadoopUtil.get.newConfiguration(sparkConf)
-  }
-
   /**
     * The class is a wrapper around Spark session and performs all necessary registrations and procedures for initialization of the library.
     *
@@ -128,9 +77,7 @@ object SparkLineageInitializer extends Logging {
   implicit class SparkSessionWrapper(sparkSession: SparkSession) {
 
     private implicit val executionContext: ExecutionContext = ExecutionContext.global
-    private def defaultSplineConfigurer = new DefaultSplineConfigurer(
-        defaultSplineConfiguration(),
-        sparkSession.sparkContext.hadoopConfiguration)
+    private def defaultSplineConfigurer = new DefaultSplineConfigurer(defaultSplineConfiguration(), sparkSession)
 
     /**
       * The method performs all necessary registrations and procedures for initialization of the library.
@@ -143,10 +90,10 @@ object SparkLineageInitializer extends Logging {
         .getOption(org.apache.spark.sql.internal.StaticSQLConf.QUERY_EXECUTION_LISTENERS.key).isDefined
       if (!splineConfiguredForCodelessInit) {
         sparkSession.synchronized {
-          SparkLineageInitializer.modeAwareListenerInit(configurer, getOrSetIsInitialized)
+          createQueryExecutionListener(configurer)
             .foreach(sparkSession.listenerManager.register(_))
-          //         TODO: SL-128
-          //        sparkSession.streams addListener configurer.streamingQueryListener
+          // TODO: SL-128
+          //       sparkSession.streams addListener configurer.streamingQueryListener
         }
       } else {
         log.warn("""
@@ -154,6 +101,40 @@ object SparkLineageInitializer extends Logging {
           It won't be initialized by this code call to enableLineageTracking now."""")
       }
       sparkSession
+    }
+
+    def createBatchListener(): QueryExecutionListener = {
+      val configurer = new DefaultSplineConfigurer(defaultSplineConfiguration(), sparkSession)
+      if (configurer.splineMode != DISABLED) {
+        createQueryExecutionListener(configurer)
+          .getOrElse(throw registrationPreventingException())
+      } else {
+        throw registrationPreventingException()
+      }
+    }
+
+    private def createQueryExecutionListener(configurer: SplineConfigurer): Option[QueryExecutionListener] = {
+      if (configurer.splineMode != DISABLED) {
+        if (!getOrSetIsInitialized()) {
+          log info s"Spline v${SplineBuildInfo.version} is initializing..."
+          try {
+            SparkVersionRequirement.instance.requireSupportedVersion()
+            // TODO configurer.streamingQueryListener
+            val listener = configurer.queryExecutionListener
+            log info s"Spline successfully initialized. Spark Lineage tracking is ENABLED."
+            Some(listener)
+          } catch {
+            case NonFatal(e) if configurer.splineMode == BEST_EFFORT =>
+              log.error(s"Spline initialization failed! Spark Lineage tracking is DISABLED.", e)
+              None
+          }
+        } else {
+          log.warn("Spline lineage tracking is already initialized!")
+          None
+        }
+      } else {
+        None
+      }
     }
 
     def defaultSplineConfiguration(): CompositeConfiguration =
@@ -169,6 +150,7 @@ object SparkLineageInitializer extends Logging {
           false
       }
     }
+
   }
 
   val initFlagKey = "spline.initialized_flag"

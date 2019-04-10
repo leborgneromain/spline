@@ -16,29 +16,25 @@
 
 package za.co.absa.spline.core.listener
 
-import java.util.function.Supplier
-
-import org.apache.spark.SparkConf
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.util.QueryExecutionListener
-import za.co.absa.spline.core.SparkLineageInitializer
-import CodelessQueryExecutionListener._
+import za.co.absa.spline.core.SparkLineageInitializer.createQueryExecutionListener
 
-class CodelessQueryExecutionListener(sparkConf: SparkConf) extends QueryExecutionListener {
+// FIXME explain the lazy approach and double prevention
+class CodelessQueryExecutionListener() extends QueryExecutionListener {
 
-  private val listener = SparkLineageInitializer.constructBatchListener(sparkConf, initialized)
+  private lazy val listener = constructBatchListener()
 
   override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit =
     listener.onSuccess(funcName, qe, durationNs)
 
   override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
     listener.onFailure(funcName, qe, exception)
-}
 
-object CodelessQueryExecutionListener {
-
-  private val initialized = ThreadLocal.withInitial(new Supplier[Boolean] {
-    override def get(): Boolean = false
-  })
-
+  def constructBatchListener(): QueryExecutionListener = {
+    val sparkSession = SparkSession.getActiveSession.getOrElse(
+      SparkSession.getDefaultSession.getOrElse(throw new IllegalStateException("Session is unexpectedly missing.")))
+    createQueryExecutionListener(sparkSession)
+  }
 }
