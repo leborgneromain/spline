@@ -17,15 +17,13 @@
 package za.co.absa.spline.core
 
 import org.apache.commons.configuration._
-import org.apache.hadoop.{conf => hadoop}
-import org.apache.spark.SparkConf
-import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.util.QueryExecutionListener
 import org.slf4s.Logging
 import za.co.absa.spline.core.conf.SplineConfigurer.SplineMode._
 import za.co.absa.spline.core.conf._
 import za.co.absa.spline.coresparkadapterapi.SparkVersionRequirement
+import org.apache.spark.sql.internal.StaticSQLConf.QUERY_EXECUTION_LISTENERS
 
 import scala.collection.JavaConverters._
 import scala.concurrent.ExecutionContext
@@ -53,22 +51,6 @@ object SparkLineageInitializer extends Logging {
   private def registrationPreventingException() = new UnsupportedOperationException(
           "This exception signals to Spark that Spline listener shouldn't be registered.")
 
-  private[core] def defaultSplineConfiguration(sparkConf: SparkConf) = {
-    val splinePropertiesFileName = "spline.properties"
-
-    val systemConfOpt = Some(new SystemConfiguration)
-    val propFileConfOpt = Try(new PropertiesConfiguration(splinePropertiesFileName)).toOption
-    val hadoopConfOpt = Some(new HadoopConfiguration(SparkHadoopUtil.get.newConfiguration(sparkConf)))
-    val sparkConfOpt = Some(new SparkConfiguration(sparkConf))
-
-    new CompositeConfiguration(Seq(
-      hadoopConfOpt,
-      sparkConfOpt,
-      systemConfOpt,
-      propFileConfOpt
-    ).flatten.asJava)
-  }
-
   /**
     * The class is a wrapper around Spark session and performs all necessary registrations and procedures for initialization of the library.
     *
@@ -77,7 +59,7 @@ object SparkLineageInitializer extends Logging {
   implicit class SparkSessionWrapper(sparkSession: SparkSession) {
 
     private implicit val executionContext: ExecutionContext = ExecutionContext.global
-    private def defaultSplineConfigurer = new DefaultSplineConfigurer(defaultSplineConfiguration(), sparkSession)
+    private def defaultSplineConfigurer = new DefaultSplineConfigurer(defaultSplineConfiguration, sparkSession)
 
     /**
       * The method performs all necessary registrations and procedures for initialization of the library.
@@ -87,7 +69,7 @@ object SparkLineageInitializer extends Logging {
       */
     def enableLineageTracking(configurer: SplineConfigurer = defaultSplineConfigurer): SparkSession = {
       val splineConfiguredForCodelessInit = sparkSession.sparkContext.getConf
-        .getOption(org.apache.spark.sql.internal.StaticSQLConf.QUERY_EXECUTION_LISTENERS.key).isDefined
+        .getOption(QUERY_EXECUTION_LISTENERS.key).isDefined
       if (!splineConfiguredForCodelessInit) {
         sparkSession.synchronized {
           createQueryExecutionListener(configurer)
@@ -104,7 +86,7 @@ object SparkLineageInitializer extends Logging {
     }
 
     def createBatchListener(): QueryExecutionListener = {
-      val configurer = new DefaultSplineConfigurer(defaultSplineConfiguration(), sparkSession)
+      val configurer = new DefaultSplineConfigurer(defaultSplineConfiguration, sparkSession)
       if (configurer.splineMode != DISABLED) {
         createQueryExecutionListener(configurer)
           .getOrElse(throw registrationPreventingException())
@@ -137,8 +119,21 @@ object SparkLineageInitializer extends Logging {
       }
     }
 
-    def defaultSplineConfiguration(): CompositeConfiguration =
-      SparkLineageInitializer.defaultSplineConfiguration(sparkSession.sparkContext.getConf)
+    private[core] val defaultSplineConfiguration = {
+      val splinePropertiesFileName = "spline.properties"
+
+      val systemConfOpt = Some(new SystemConfiguration)
+      val propFileConfOpt = Try(new PropertiesConfiguration(splinePropertiesFileName)).toOption
+      val hadoopConfOpt = Some(new HadoopConfiguration(sparkSession.sparkContext.hadoopConfiguration))
+      val sparkConfOpt = Some(new SparkConfiguration(sparkSession.sparkContext.getConf))
+
+      new CompositeConfiguration(Seq(
+        hadoopConfOpt,
+        sparkConfOpt,
+        systemConfOpt,
+        propFileConfOpt
+      ).flatten.asJava)
+    }
 
     private def getOrSetIsInitialized(): Boolean = {
       val sessionConf = sparkSession.conf
