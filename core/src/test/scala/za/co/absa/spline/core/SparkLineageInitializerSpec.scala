@@ -20,15 +20,19 @@ import org.apache.commons.configuration.Configuration
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.util.QueryExecutionListener
+import org.apache.spark.sql.internal.StaticSQLConf.QUERY_EXECUTION_LISTENERS
 import org.scalatest.Matchers._
 import org.scalatest.mockito.MockitoSugar
 import org.scalatest.{BeforeAndAfterEach, FunSpec, Matchers}
+import za.co.absa.spline.common.ReflectionUtils
 import za.co.absa.spline.core.SparkLineageInitializer._
 import za.co.absa.spline.core.SparkLineageInitializerSpec._
 import za.co.absa.spline.core.conf.DefaultSplineConfigurer.ConfProperty.{MODE, PERSISTENCE_FACTORY}
 import za.co.absa.spline.core.conf.SplineConfigurer.SplineMode._
-import za.co.absa.spline.core.listener.SplineQueryExecutionListener
+import za.co.absa.spline.core.listener.{CodelessQueryExecutionListener, SplineQueryExecutionListener}
 import za.co.absa.spline.persistence.api.{DataLineageReader, DataLineageWriter, PersistenceFactory}
+
+import scala.collection.mutable.ListBuffer
 
 object SparkLineageInitializerSpec {
 
@@ -59,6 +63,12 @@ object SparkLineageInitializerSpec {
   private def assertSplineIsEnabled() = sparkQueryExecutionListenerClasses should contain(classOf[SplineQueryExecutionListener])
 
   private def assertSplineIsDisabled() = sparkQueryExecutionListenerClasses should not contain classOf[SplineQueryExecutionListener]
+
+  def numberOfRegisteredSplineListeners(session: SparkSession): Int = {
+    val listeners: ListBuffer[QueryExecutionListener] = ReflectionUtils.getFieldValue(session.listenerManager,
+      "org$apache$spark$sql$util$ExecutionListenerManager$$listeners")
+    listeners.count(l => l.isInstanceOf[SplineQueryExecutionListener])
+  }
 }
 
 class SparkLineageInitializerSpec extends FunSpec with BeforeAndAfterEach with Matchers {
@@ -125,13 +135,31 @@ class SparkLineageInitializerSpec extends FunSpec with BeforeAndAfterEach with M
     }
   }
 
+  describe("codeless initialization") {
+    it("should not allow duplicate tracking via any of the methods") {
+      jvmProps.setProperty(QUERY_EXECUTION_LISTENERS.key,
+        s"${classOf[CodelessQueryExecutionListener].getName},${classOf[CodelessQueryExecutionListener].getName}")
+      jvmProps.setProperty(PERSISTENCE_FACTORY, classOf[MockReadWritePersistenceFactory].getName)
+      val session = SparkSession.builder.getOrCreate
+      numberOfRegisteredSplineListeners(session) shouldBe 2
+      session.enableLineageTracking()
+      numberOfRegisteredSplineListeners(session) shouldBe 2
+      session.enableLineageTracking()
+      numberOfRegisteredSplineListeners(session) shouldBe 2
+      // FIXME test sending lineage - should allow only single send
+    }
+  }
+
   describe("enableLineageTracking()") {
-    it("should not allow double initialization") {
-      intercept[IllegalStateException] {
-        SparkSession.builder.getOrCreate
-          .enableLineageTracking() // 1st is fine
-          .enableLineageTracking() // 2nd should fail
-      }
+    it("should not allow double initialization and tracking inheritance") {
+      jvmProps.setProperty(PERSISTENCE_FACTORY, classOf[MockReadWritePersistenceFactory].getName)
+      val session = SparkSession.builder.getOrCreate
+      session
+        .enableLineageTracking() // 1st is fine
+        .enableLineageTracking() // 2nd should warn
+      numberOfRegisteredSplineListeners(session) shouldBe 1
+      val session2 = session.newSession()
+      numberOfRegisteredSplineListeners(session2) shouldBe 0
     }
 
     it("should return the spark session back to the caller") {
